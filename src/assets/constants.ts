@@ -18,5 +18,6 @@ export const VIDEO_OPTIONS = [
 ];
 
 export const DEFAULT_EXPRESSIONS = { angry: 0.0, disgusted: 0.0, fearful: 0.0, happy: 0.0, neutral: 0.0, sad: 0.0, surprised: 0.0 };
+export const DEFAULT_MODELS_URL = "/models";
 
 // to convert YT to mp4s: https://turboscribe.ai/downloader/youtube/mp4

@@ -1,80 +1,85 @@
 import { useState, useEffect, useRef } from 'react';
 import * as faceapi from "face-api.js";
 import type { Expressions } from './assets/types';
-import { VIDEO_OPTIONS, DEFAULT_EXPRESSIONS } from './assets/constants';
+import { VIDEO_OPTIONS, DEFAULT_EXPRESSIONS, DEFAULT_MODELS_URL } from './assets/constants';
 
 
 export default function App() {
+  const lastDetectionTime = useRef(0);
   const animationRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [expressions, setExpressions] = useState<Expressions>(DEFAULT_EXPRESSIONS);
   const [currentVideo, setCurrentVideo] = useState(VIDEO_OPTIONS[0]);
 
 
-  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newId = e.target.value;
-    
-    const newVideo = VIDEO_OPTIONS.filter((video) => video.id == newId)[0];
-    setCurrentVideo(newVideo);
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {   
+    setCurrentVideo(VIDEO_OPTIONS.filter((video) => video.id == e.target.value)[0]);
+    setExpressions(DEFAULT_EXPRESSIONS);
 
-    // Optional: reset video playback
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.load();
-      videoRef.current.play().catch(() => {});
+    const ctx = canvasRef.current?.getContext("2d");
+    if (canvasRef.current) {
+      ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
+  };
+
+  
+  const handleLoaded = () => {
+    setVideoReady(true);
+  }
+
+
+  const loadModels = async () => {
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(DEFAULT_MODELS_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(DEFAULT_MODELS_URL),
+      faceapi.nets.faceExpressionNet.loadFromUri(DEFAULT_MODELS_URL),
+    ]);
+
+    setModelsLoaded(true);
   };
 
 
   useEffect(() => {
-    const loadModels = async () => {
-      const MODEL_URL = "/models";
-
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
-      ]);
-
-      setModelsLoaded(true);
-    };
-
     loadModels();
-  }, []);
 
-  useEffect(() => {
     const video = videoRef.current;
-
     if (!video) return;
 
-    const handleLoaded = () => {
-      setVideoReady(true);
-    }
-
     video.addEventListener("loadedmetadata", handleLoaded);
-
-    return () => {
-      video.removeEventListener("loadedmetadata", handleLoaded);
-    }
+    return () => { video.removeEventListener("loadedmetadata", handleLoaded); }
   }, []);
 
+  
+  useEffect(() => {
+    if (!modelsLoaded || !videoReady) return;
 
-  let lastDetectionTime = 0;
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.addEventListener("play", runDetectionLoop);
+
+    return () => {
+      video.removeEventListener("play", runDetectionLoop);
+
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [modelsLoaded, videoReady]);
+
 
   const runDetectionLoop = async () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    if (!video || !canvas) return;
-    if (video.paused || video.ended) return;
+    if (!video || !canvas || video.paused || video.ended) return;
 
     const now = Date.now();
-    if (now - lastDetectionTime > 1000) {
-      lastDetectionTime = now;
+    if (now - lastDetectionTime.current > 1000) {
+      lastDetectionTime.current = now;
 
       const detection = await faceapi
         .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
@@ -82,15 +87,15 @@ export default function App() {
         .withFaceExpressions();
 
       const ctx = canvas.getContext("2d")!;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height); // clears canvas even when no face detected (instead of moving inside the detection check below)
 
       if (detection) {
+        const box = detection.detection.box;
+
         const scaleX = canvas.width / video.videoWidth;
         const scaleY = canvas.height / video.videoHeight;
-
-        const box = detection.detection.box;
-        const rectWidth = box.width * scaleX * 0.75;   // narrower
-        const rectHeight = box.height * scaleY * 1.25; // taller
+        const rectWidth = box.width * scaleX * 0.75;   // 0.75 for narrower
+        const rectHeight = box.height * scaleY * 1.25; // 1.25 for taller
 
         ctx.strokeStyle = "lime";
         ctx.lineWidth = 2;
@@ -101,46 +106,26 @@ export default function App() {
           rectHeight
         );
 
-        // Label top expression
-        const topExp = Object.entries(detection.expressions).sort((a, b) => b[1] - a[1])[0];
+        // label expression below box
+        const topExp = Object.entries(detection.expressions).sort((a, b) => b[1] - a[1])[0]; // "top" expression is top-RATED expression
         if (topExp) {
           ctx.fillStyle = "lime";
           ctx.font = "10px Arial";
           ctx.textAlign = "center";
-          ctx.textBaseline = "top";       // Y coordinate is the top of the text
+          ctx.textBaseline = "top";       // y-coordinate is the top of the text
           ctx.fillText(
             `${topExp[0]} ${(topExp[1] * 100).toFixed(1)}%`,
             box.x * scaleX + (box.width * scaleX) / 2,                 // same horizontal center as box
             box.y * scaleY - (rectHeight - box.height * scaleY) / 2 + rectHeight + 2 // below the rectangle
           );
         }
+
         setExpressions(detection.expressions as Expressions);
       }
     }
 
     animationRef.current = requestAnimationFrame(runDetectionLoop);
   };
-
-
-  useEffect(() => {
-    if (!modelsLoaded || !videoReady) return;
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    const handlePlay = () => {
-      runDetectionLoop();
-    };
-
-    video.addEventListener("play", handlePlay);
-
-    return () => {
-      video.removeEventListener("play", handlePlay);
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [modelsLoaded, videoReady]);
 
 
   return (
